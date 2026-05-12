@@ -1,6 +1,7 @@
 package com.masterinjection.websocket.service
 
 import com.masterinjection.websocket.domain.AuthenticatedClient
+import com.masterinjection.websocket.domain.ClientStatus
 import com.masterinjection.websocket.domain.ClientType
 import com.masterinjection.websocket.domain.Customer
 import com.masterinjection.websocket.domain.Tuner
@@ -16,7 +17,6 @@ import com.masterinjection.websocket.extension.sendJsonMessage
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.TaskScheduler
 import org.springframework.stereotype.Service
-import org.springframework.web.socket.CloseStatus
 import org.springframework.web.socket.WebSocketSession
 import java.time.Instant
 import java.util.UUID
@@ -54,6 +54,8 @@ class TuningSessionService(
         val tuner = validateTuner(id, secret)
         tuner.wsSession?.let { old -> tunersByWsSessionId.remove(old.id) }
         tuner.wsSession = session
+        tuner.disconnectedAt = null
+        tuner.status = if (tuner.customerConnected != null) ClientStatus.PAIRED else ClientStatus.CONNECTED
         tunersByWsSessionId[session.id] = tuner
         session.sendJsonMessage(RegisteredMessage(tuner.id, tuner.name, tuner.secret, System.currentTimeMillis()))
         tuner.customerConnected?.let { customer ->
@@ -65,11 +67,24 @@ class TuningSessionService(
     fun disconnectTunerWs(session: WebSocketSession) {
         val tuner = tunersByWsSessionId.remove(session.id) ?: return
         tuner.wsSession = null
+        tuner.status = ClientStatus.DISCONNECTED
+        val disconnectedAt = Instant.now()
+        tuner.disconnectedAt = disconnectedAt
+
         tuner.customerConnected?.let { customer ->
             tuner.customerConnected = null
             customer.tunerConnected = null
+            if (customer.wsSession != null) customer.status = ClientStatus.CONNECTED
             customer.wsSession?.sendJsonMessage(PairDisconnectedMessage(System.currentTimeMillis()))
         }
+
+        scheduler.schedule(Runnable {
+            if (tuners[tuner.id]?.disconnectedAt == disconnectedAt) {
+                tuners.remove(tuner.id)
+                logger.info("Tuner auto-removed after 2min disconnect: ${tuner.id}")
+            }
+        }, Instant.now().plusSeconds(120))
+
         logger.info("Tuner WS disconnected: ${tuner.id} session=${session.id}")
     }
 
@@ -90,6 +105,8 @@ class TuningSessionService(
         val customer = validateCustomer(id, secret)
         customer.wsSession?.let { old -> customersByWsSessionId.remove(old.id) }
         customer.wsSession = session
+        customer.disconnectedAt = null
+        customer.status = if (customer.tunerConnected != null) ClientStatus.PAIRED else ClientStatus.CONNECTED
         customersByWsSessionId[session.id] = customer
         session.sendJsonMessage(RegisteredMessage(customer.id, customer.name, customer.secret, System.currentTimeMillis()))
         customer.tunerConnected?.let { tuner ->
@@ -101,11 +118,24 @@ class TuningSessionService(
     fun disconnectCustomerWs(session: WebSocketSession) {
         val customer = customersByWsSessionId.remove(session.id) ?: return
         customer.wsSession = null
+        customer.status = ClientStatus.DISCONNECTED
+        val disconnectedAt = Instant.now()
+        customer.disconnectedAt = disconnectedAt
+
         customer.tunerConnected?.let { tuner ->
             customer.tunerConnected = null
             tuner.customerConnected = null
+            if (tuner.wsSession != null) tuner.status = ClientStatus.CONNECTED
             tuner.wsSession?.sendJsonMessage(PairDisconnectedMessage(System.currentTimeMillis()))
         }
+
+        scheduler.schedule(Runnable {
+            if (customers[customer.id]?.disconnectedAt == disconnectedAt) {
+                customers.remove(customer.id)
+                logger.info("Customer auto-removed after 2min disconnect: ${customer.id}")
+            }
+        }, Instant.now().plusSeconds(120))
+
         logger.info("Customer WS disconnected: ${customer.id} session=${session.id}")
     }
 
@@ -146,6 +176,7 @@ class TuningSessionService(
         tuner.wsSession?.let { tunersByWsSessionId.remove(it.id) }
         tuner.customerConnected?.let { customer ->
             customer.tunerConnected = null
+            if (customer.wsSession != null) customer.status = ClientStatus.CONNECTED
             customer.wsSession?.sendJsonMessage(PairDisconnectedMessage(System.currentTimeMillis()))
         }
         logger.info("Tuner unregistered: ${tuner.id}")
@@ -157,6 +188,7 @@ class TuningSessionService(
         customer.wsSession?.let { customersByWsSessionId.remove(it.id) }
         customer.tunerConnected?.let { tuner ->
             tuner.customerConnected = null
+            if (tuner.wsSession != null) tuner.status = ClientStatus.CONNECTED
             tuner.wsSession?.sendJsonMessage(PairDisconnectedMessage(System.currentTimeMillis()))
         }
         logger.info("Customer unregistered: ${customer.id}")
@@ -218,6 +250,8 @@ class TuningSessionService(
         if (accepted) {
             tuner.customerConnected = customer
             customer.tunerConnected = tuner
+            tuner.status = ClientStatus.PAIRED
+            customer.status = ClientStatus.PAIRED
             tuner.wsSession?.sendJsonMessage(PairConnectedMessage(now, PairConnectedMessage.Peer(customer.id, customer.name)))
             customer.wsSession?.sendJsonMessage(PairConnectedMessage(now, PairConnectedMessage.Peer(tuner.id, tuner.name)))
         } else {

@@ -40,7 +40,7 @@ WebSocket connection = presence signal (no polling needed). REST handles discret
 | `X-Client-Name` | any string | **New registration** — server creates entity, returns `REGISTERED {id, name, secret}` |
 | `X-Client-Id` + `X-Client-Secret` | from prior `REGISTERED` push | **Reconnect** — resumes existing session; if paired, also pushes `PAIR_CONNECTED` to re-sync state |
 
-Endpoints: `/ws/tuner` and `/ws/customer`. WS disconnect ≠ unregistration — entity stays in memory until REST `DELETE` or server restart. Disconnect does trigger `PAIR_DISCONNECTED` to the peer if currently paired.
+Endpoints: `/ws/tuner` and `/ws/customer`. WS disconnect ≠ unregistration — entity remains in memory for **2 minutes** after disconnect, then is auto-removed. Explicit REST `DELETE` removes immediately. Disconnect triggers `PAIR_DISCONNECTED` to the peer if currently paired.
 
 ### REST API
 
@@ -52,7 +52,7 @@ All endpoints require `X-Client-Id` and `X-Client-Secret` headers (credentials f
 | `GET` | `/api/tuners/{id}/state` | Tuner | Own state |
 | `DELETE` | `/api/customers/{id}` | Customer | Explicit unregistration |
 | `GET` | `/api/customers/{id}/state` | Customer | Own state |
-| `GET` | `/api/customers` | Tuner | List available customers |
+| `GET` | `/api/customers` | Tuner | List all customers (including `DISCONNECTED`) |
 | `POST` | `/api/connections` | Tuner | Request pairing `{customerId}` → `{requestId}` |
 | `POST` | `/api/connections/{requestId}/respond` | Customer | Accept/reject `{accepted}` |
 
@@ -70,10 +70,22 @@ Customer ◄──── WS push: PAIR_CONNECTED {peer} ────────
 
 If customer doesn't respond within 15 seconds, tuner receives `REGISTER_TO_CUSTOMER_RESPONSE { success: false }`.
 
+### Client status (`ClientStatus`)
+
+Each tuner and customer carries a `status: ClientStatus` field:
+
+| Status | Meaning |
+|---|---|
+| `CONNECTED` | WS active, not paired |
+| `PAIRED` | WS active and paired with a peer |
+| `DISCONNECTED` | WS closed; entity pending 2-min auto-removal |
+
+Transitions: new connection / reconnect → `CONNECTED`; pairing accepted → `PAIRED` (both sides); WS disconnect / unregister → peer reverts to `CONNECTED`, disconnected side → `DISCONNECTED`. Entities with `DISCONNECTED` status are auto-removed 2 minutes after disconnect; reconnecting before that window cancels the removal.
+
 ### Session state (all in-memory, `TuningSessionService`)
 
-- `tuners` / `customers` — keyed by entity ID (registration state)
-- `tunersByWsSessionId` / `customersByWsSessionId` — reverse maps for O(1) WS-session lookup
+- `tuners` / `customers` — keyed by entity ID; includes entities in `DISCONNECTED` state (pending 2-min cleanup)
+- `tunersByWsSessionId` / `customersByWsSessionId` — reverse maps for O(1) WS-session lookup (only active sessions)
 - `pendingRegisters` — in-flight pairing requests, keyed by `requestId` (Unix ms timestamp)
 
 ### WS message reference

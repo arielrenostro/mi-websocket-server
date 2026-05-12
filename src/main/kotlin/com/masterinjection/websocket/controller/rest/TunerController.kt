@@ -27,5 +27,5 @@ class TunerController(private val tuningSessionService: TuningSessionService) {
         return ResponseEntity.noContent().build()
     }
 
-    private fun Tuner.toStateResponse() = StateResponse(id, name, customerConnected != null)
+    private fun Tuner.toStateResponse() = StateResponse(id, name, status)
 }

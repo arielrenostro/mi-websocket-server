@@ -248,9 +248,11 @@ X-Client-Secret: a3f1c29e8b4d6e0f7a2c5d8e1b4f9c3a
 {
   "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
   "name": "MeuTuner",
-  "connected": false
+  "status": "CONNECTED"
 }
 ```
+
+> `status` pode ser `CONNECTED` (WS ativo, sem par), `PAIRED` (WS ativo e pareado) ou `DISCONNECTED` (WS fechado, entidade aguarda remoção em 2 min).
 
 ---
 
@@ -288,15 +290,22 @@ X-Client-Secret: a3f1c29e8b4d6e0f7a2c5d8e1b4f9c3a
   {
     "id": "c9a1b2e3-44f5-6789-abcd-ef0123456789",
     "name": "Carro01",
-    "connected": false
+    "status": "CONNECTED"
   },
   {
     "id": "d8e7f6a5-3b2c-1d0e-9f8a-7b6c5d4e3f2a",
     "name": "Carro02",
-    "connected": true
+    "status": "PAIRED"
+  },
+  {
+    "id": "e1f2a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b",
+    "name": "Carro03",
+    "status": "DISCONNECTED"
   }
 ]
 ```
+
+> Inclui customers em todos os estados. Customers `DISCONNECTED` serão removidos automaticamente após 2 minutos; não possuem WebSocket ativo e não podem receber solicitações de pair.
 
 ---
 
@@ -314,9 +323,11 @@ X-Client-Secret: 9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e
 {
   "id": "c9a1b2e3-44f5-6789-abcd-ef0123456789",
   "name": "Carro01",
-  "connected": false
+  "status": "CONNECTED"
 }
 ```
+
+> `status` pode ser `CONNECTED`, `PAIRED` ou `DISCONNECTED`. Veja detalhes em [GET /api/tuners/{id}/state](#get-apitunersidstate).
 
 ---
 

@@ -1,6 +1,7 @@
 package com.masterinjection.websocket.domain
 
 import org.springframework.web.socket.WebSocketSession
+import java.time.Instant
 
 class Tuner(
     val id: String,
@@ -8,4 +9,6 @@ class Tuner(
     val secret: String,
     var wsSession: WebSocketSession? = null,
     var customerConnected: Customer? = null,
+    var status: ClientStatus = ClientStatus.CONNECTED,
+    var disconnectedAt: Instant? = null,
 )

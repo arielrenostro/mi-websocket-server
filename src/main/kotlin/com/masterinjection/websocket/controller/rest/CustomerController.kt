@@ -34,7 +34,7 @@ class CustomerController(private val tuningSessionService: TuningSessionService)
         return ResponseEntity.ok(customers.map { it.toCustomerResponse() })
     }
 
-    private fun Customer.toStateResponse() = StateResponse(id, name, tunerConnected != null)
+    private fun Customer.toStateResponse() = StateResponse(id, name, status)
 
-    private fun Customer.toCustomerResponse() = CustomerResponse(id, name, tunerConnected != null)
+    private fun Customer.toCustomerResponse() = CustomerResponse(id, name, status)
 }
