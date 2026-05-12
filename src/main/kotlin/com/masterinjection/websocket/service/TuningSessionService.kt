@@ -36,7 +36,7 @@ class TuningSessionService(
     private val pendingRegisters = ConcurrentHashMap<Long, PendingRegisterDto>()
 
     fun registerTuner(session: WebSocketSession, name: String?) {
-        if (name == null) {
+        if (name.isNullOrBlank()) {
             this.logger.warn("Tuner name $name not found during registration")
             session.sendJsonError(null, "Tuner Name not found")
             session.close(CloseStatus.NOT_ACCEPTABLE)
@@ -60,7 +60,7 @@ class TuningSessionService(
     }
 
     fun registerCustomer(session: WebSocketSession, name: String?) {
-        if (name == null) {
+        if (name.isNullOrBlank()) {
             this.logger.warn("Customer name $name not found during registration")
             session.sendJsonError(null, "Customer Name not found")
             session.close(CloseStatus.NOT_ACCEPTABLE)
@@ -142,6 +142,7 @@ class TuningSessionService(
                 is ListCustomersRequestMessage -> onListCustomerRequest(tuner, message)
                 is RegisterToCustomerRequestMessage -> onRegisterToCustomerRequest(tuner, message)
                 is EchoSerialDataMessage -> onEchoSerialDataMessage(tuner, message)
+                is GetStateRequestMessage -> onGetStateRequest(tuner, message)
                 else -> throw IllegalArgumentException("Unsupported message type ${message.type}")
             }
         } catch (e: Exception) {
@@ -233,6 +234,20 @@ class TuningSessionService(
             this.logger.warn("Failure during customer message. Session: ${session.id} Timestamp: ${message.timestamp} Type: ${e.message}")
             session.sendJsonError(message.timestamp, e.message)
         }
+    }
+
+    private fun onGetStateRequest(tuner: Tuner, message: GetStateRequestMessage) {
+        tuner.session.sendJsonMessage(
+            GetStateResponseMessage(
+                timestamp = System.currentTimeMillis(),
+                responseTo = message.timestamp,
+                data = GetStateResponseMessage.Data(
+                    id = tuner.id,
+                    name = tuner.name,
+                    connected = tuner.customerConnected != null,
+                )
+            )
+        )
     }
 
     private fun onGetStateRequest(customer: Customer, message: GetStateRequestMessage) {

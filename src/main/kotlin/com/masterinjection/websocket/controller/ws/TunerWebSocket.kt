@@ -35,7 +35,7 @@ class TunerWebSocket(
     }
 
     override fun afterConnectionClosed(session: WebSocketSession, status: CloseStatus) {
-        this.logger.info("Customer Disconnected: ${session.id} - ${session.attributes["name"]} - $status")
+        this.logger.info("Tuner Disconnected: ${session.id} - ${session.attributes["name"]} - $status")
         this.tuningSessionService.unregisterTuner(session, status)
     }
 }
