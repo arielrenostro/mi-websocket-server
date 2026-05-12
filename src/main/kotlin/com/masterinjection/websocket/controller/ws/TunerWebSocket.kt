@@ -21,21 +21,34 @@ class TunerWebSocket(
 
     override fun handleTextMessage(session: WebSocketSession, message: TextMessage) {
         try {
-            val message = this.mapper.readValue(message.payload, BaseMessage::class.java)
-            this.tuningSessionService.onTunerMessage(session, message)
+            val msg = mapper.readValue(message.payload, BaseMessage::class.java)
+            tuningSessionService.onTunerMessage(session, msg)
         } catch (e: Exception) {
-            this.logger.warn("Failure on Tuner WebSocket. Session: ${session.id} Message: ${message.payload} Error: ${e.message}")
+            logger.warn("Failure on Tuner WebSocket. Session: ${session.id} Error: ${e.message}")
             session.sendJsonError(null, e.message)
         }
     }
 
     override fun afterConnectionEstablished(session: WebSocketSession) {
-        this.logger.info("New Tuner Connected: ${session.id} - ${session.attributes["name"]}")
-        this.tuningSessionService.registerTuner(session, session.attributes["name"] as String?)
+        val id = session.attributes["clientId"] as String?
+        val secret = session.attributes["clientSecret"] as String?
+        val name = session.attributes["clientName"] as String?
+        try {
+            when {
+                id != null && secret != null -> tuningSessionService.reconnectTunerWs(session, id, secret)
+                name != null -> tuningSessionService.newTunerConnection(session, name)
+                else -> {
+                    logger.warn("Tuner WS rejected: missing X-Client-Name or X-Client-Id/X-Client-Secret headers")
+                    session.close(CloseStatus.NOT_ACCEPTABLE)
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn("Tuner WS connection rejected: ${e.message}")
+            session.close(CloseStatus.NOT_ACCEPTABLE)
+        }
     }
 
     override fun afterConnectionClosed(session: WebSocketSession, status: CloseStatus) {
-        this.logger.info("Tuner Disconnected: ${session.id} - ${session.attributes["name"]} - $status")
-        this.tuningSessionService.unregisterTuner(session, status)
+        tuningSessionService.disconnectTunerWs(session)
     }
 }

@@ -1,15 +1,15 @@
 package com.masterinjection.websocket.service
 
+import com.masterinjection.websocket.domain.AuthenticatedClient
+import com.masterinjection.websocket.domain.ClientType
 import com.masterinjection.websocket.domain.Customer
-import com.masterinjection.websocket.domain.ITuningListener
 import com.masterinjection.websocket.domain.Tuner
 import com.masterinjection.websocket.domain.message.BaseMessage
 import com.masterinjection.websocket.domain.message.customer.RegisterTunerRequestMessage
-import com.masterinjection.websocket.domain.message.customer.RegisterTunerResponseMessage
-import com.masterinjection.websocket.domain.message.generic.*
-import com.masterinjection.websocket.domain.message.tuner.ListCustomersRequestMessage
-import com.masterinjection.websocket.domain.message.tuner.ListCustomersResponseMessage
-import com.masterinjection.websocket.domain.message.tuner.RegisterToCustomerRequestMessage
+import com.masterinjection.websocket.domain.message.generic.EchoSerialDataMessage
+import com.masterinjection.websocket.domain.message.generic.PairConnectedMessage
+import com.masterinjection.websocket.domain.message.generic.PairDisconnectedMessage
+import com.masterinjection.websocket.domain.message.generic.RegisteredMessage
 import com.masterinjection.websocket.domain.message.tuner.RegisterToCustomerResponseMessage
 import com.masterinjection.websocket.extension.sendJsonError
 import com.masterinjection.websocket.extension.sendJsonMessage
@@ -19,7 +19,7 @@ import org.springframework.stereotype.Service
 import org.springframework.web.socket.CloseStatus
 import org.springframework.web.socket.WebSocketSession
 import java.time.Instant
-import java.util.*
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
 @Service
@@ -28,284 +28,266 @@ class TuningSessionService(
 ) {
 
     private val logger = LoggerFactory.getLogger(TuningSessionService::class.java)
-    private val customers = ConcurrentHashMap<String, Customer>()
-    private val tuners = ConcurrentHashMap<String, Tuner>()
-    private val listeners = Collections.synchronizedList(mutableListOf<ITuningListener>())
 
-    // TODO: remove this after response structure.
+    private val tuners = ConcurrentHashMap<String, Tuner>()
+    private val customers = ConcurrentHashMap<String, Customer>()
+    private val tunersByWsSessionId = ConcurrentHashMap<String, Tuner>()
+    private val customersByWsSessionId = ConcurrentHashMap<String, Customer>()
     private val pendingRegisters = ConcurrentHashMap<Long, PendingRegisterDto>()
 
-    fun registerTuner(session: WebSocketSession, name: String?) {
-        if (name.isNullOrBlank()) {
-            this.logger.warn("Tuner name $name not found during registration")
-            session.sendJsonError(null, "Tuner Name not found")
-            session.close(CloseStatus.NOT_ACCEPTABLE)
-            return
-        }
+    // --- WebSocket lifecycle ---
 
+    fun newTunerConnection(session: WebSocketSession, name: String) {
         val tuner = Tuner(
-            id = session.id,
+            id = UUID.randomUUID().toString(),
             name = name,
-            session = session,
+            secret = UUID.randomUUID().toString().replace("-", ""),
+            wsSession = session,
         )
-        tuners.putIfAbsent(tuner.id, tuner)
-
-        tuner.session.sendJsonMessage(
-            RegisteredMessage(
-                id = tuner.id,
-                name = tuner.name,
-                timestamp = System.currentTimeMillis(),
-            )
-        )
+        tuners[tuner.id] = tuner
+        tunersByWsSessionId[session.id] = tuner
+        session.sendJsonMessage(RegisteredMessage(tuner.id, tuner.name, tuner.secret, System.currentTimeMillis()))
+        logger.info("Tuner registered: ${tuner.id} name=${tuner.name} session=${session.id}")
     }
 
-    fun registerCustomer(session: WebSocketSession, name: String?) {
-        if (name.isNullOrBlank()) {
-            this.logger.warn("Customer name $name not found during registration")
-            session.sendJsonError(null, "Customer Name not found")
-            session.close(CloseStatus.NOT_ACCEPTABLE)
-            return
+    fun reconnectTunerWs(session: WebSocketSession, id: String, secret: String) {
+        val tuner = validateTuner(id, secret)
+        tuner.wsSession?.let { old -> tunersByWsSessionId.remove(old.id) }
+        tuner.wsSession = session
+        tunersByWsSessionId[session.id] = tuner
+        session.sendJsonMessage(RegisteredMessage(tuner.id, tuner.name, tuner.secret, System.currentTimeMillis()))
+        tuner.customerConnected?.let { customer ->
+            session.sendJsonMessage(PairConnectedMessage(System.currentTimeMillis(), PairConnectedMessage.Peer(customer.id, customer.name)))
         }
-
-        val customer = Customer(
-            id = session.id,
-            name = name,
-            session = session,
-        )
-        customers.putIfAbsent(customer.id, customer)
-
-        this.dispatchListeners { it.onCustomerRegister(customer) }
-
-        customer.session.sendJsonMessage(
-            RegisteredMessage(
-                id = customer.id,
-                name = customer.name,
-                timestamp = System.currentTimeMillis(),
-            )
-        )
+        logger.info("Tuner reconnected: ${tuner.id} session=${session.id}")
     }
 
-    fun unregisterCustomer(session: WebSocketSession, status: CloseStatus) {
-        val customer = customers.remove(session.id)
-        if (customer == null) {
-            this.logger.warn("Customer not found during unregister: ${session.id} - $status")
-            return
-        }
-        customer.tunerConnected?.let {
-            it.session.sendJsonMessage(
-                PairDisconnectedMessage(
-                    timestamp = System.currentTimeMillis(),
-                )
-            )
-            customer.tunerConnected = null
-        }
-    }
-
-    fun unregisterTuner(session: WebSocketSession, status: CloseStatus) {
-        val tuner = tuners.remove(session.id)
-        if (tuner == null) {
-            this.logger.warn("Tuner not found during unregister: ${session.id} - $status")
-            return
-        }
-        tuner.customerConnected?.let {
-            it.session.sendJsonMessage(
-                PairDisconnectedMessage(
-                    timestamp = System.currentTimeMillis(),
-                )
-            )
+    fun disconnectTunerWs(session: WebSocketSession) {
+        val tuner = tunersByWsSessionId.remove(session.id) ?: return
+        tuner.wsSession = null
+        tuner.customerConnected?.let { customer ->
             tuner.customerConnected = null
+            customer.tunerConnected = null
+            customer.wsSession?.sendJsonMessage(PairDisconnectedMessage(System.currentTimeMillis()))
         }
+        logger.info("Tuner WS disconnected: ${tuner.id} session=${session.id}")
     }
 
-    private fun dispatchListeners(fn: (ITuningListener) -> Unit) {
-        for (listener in this.listeners) {
-            try {
-                fn(listener)
-            } catch (e: Exception) {
-                this.logger.error("Failure during listener dispatch: ${e.message}", e)
-            }
+    fun newCustomerConnection(session: WebSocketSession, name: String) {
+        val customer = Customer(
+            id = UUID.randomUUID().toString(),
+            name = name,
+            secret = UUID.randomUUID().toString().replace("-", ""),
+            wsSession = session,
+        )
+        customers[customer.id] = customer
+        customersByWsSessionId[session.id] = customer
+        session.sendJsonMessage(RegisteredMessage(customer.id, customer.name, customer.secret, System.currentTimeMillis()))
+        logger.info("Customer registered: ${customer.id} name=${customer.name} session=${session.id}")
+    }
+
+    fun reconnectCustomerWs(session: WebSocketSession, id: String, secret: String) {
+        val customer = validateCustomer(id, secret)
+        customer.wsSession?.let { old -> customersByWsSessionId.remove(old.id) }
+        customer.wsSession = session
+        customersByWsSessionId[session.id] = customer
+        session.sendJsonMessage(RegisteredMessage(customer.id, customer.name, customer.secret, System.currentTimeMillis()))
+        customer.tunerConnected?.let { tuner ->
+            session.sendJsonMessage(PairConnectedMessage(System.currentTimeMillis(), PairConnectedMessage.Peer(tuner.id, tuner.name)))
         }
+        logger.info("Customer reconnected: ${customer.id} session=${session.id}")
     }
 
-    fun getTuner(id: String): Tuner {
-        return tuners[id] ?: throw IllegalArgumentException("No Tuner found with id $id")
-    }
-
-    fun getCustomer(id: String): Customer {
-        return customers[id] ?: throw IllegalArgumentException("No Customer found with id $id")
-    }
-
-    fun onTunerMessage(session: WebSocketSession, message: BaseMessage) {
-        try {
-            val tuner = getTuner(session.id)
-            when (message) {
-                is ListCustomersRequestMessage -> onListCustomerRequest(tuner, message)
-                is RegisterToCustomerRequestMessage -> onRegisterToCustomerRequest(tuner, message)
-                is EchoSerialDataMessage -> onEchoSerialDataMessage(tuner, message)
-                is GetStateRequestMessage -> onGetStateRequest(tuner, message)
-                else -> throw IllegalArgumentException("Unsupported message type ${message.type}")
-            }
-        } catch (e: Exception) {
-            this.logger.warn("Failure during tuner message. Session: ${session.id} Timestamp: ${message.timestamp} Type: ${e.message}")
-            session.sendJsonError(message.timestamp, e.message)
+    fun disconnectCustomerWs(session: WebSocketSession) {
+        val customer = customersByWsSessionId.remove(session.id) ?: return
+        customer.wsSession = null
+        customer.tunerConnected?.let { tuner ->
+            customer.tunerConnected = null
+            tuner.customerConnected = null
+            tuner.wsSession?.sendJsonMessage(PairDisconnectedMessage(System.currentTimeMillis()))
         }
+        logger.info("Customer WS disconnected: ${customer.id} session=${session.id}")
     }
 
-    private fun onEchoSerialDataMessage(
-        tuner: Tuner,
-        message: EchoSerialDataMessage
-    ) {
-        val customer = tuner.customerConnected ?: throw IllegalStateException("Customer not connected")
-        customer.session.sendJsonMessage(message)
-    }
+    // --- REST: authentication (interceptor entry point) ---
 
-    private fun onEchoSerialDataMessage(
-        customer: Customer,
-        message: EchoSerialDataMessage
-    ) {
-        val tuner = customer.tunerConnected ?: throw IllegalStateException("Tuner not connected")
-        tuner.session.sendJsonMessage(message)
-    }
-
-    private fun onRegisterToCustomerRequest(tuner: Tuner, message: RegisterToCustomerRequestMessage) {
-        val customer = getCustomer(message.customerId)
-        if (customer.tunerConnected != null) {
-            throw IllegalStateException("Tuner already connected: ${customer.tunerConnected?.id} ${customer.tunerConnected?.name}")
+    fun authenticate(id: String, secret: String): AuthenticatedClient {
+        tuners[id]?.let {
+            if (it.secret != secret) throw SecurityException("Invalid secret for tuner $id")
+            return AuthenticatedClient(id, ClientType.TUNER)
         }
-        if (tuner.customerConnected != null) {
-            throw IllegalStateException("Tuner already connected to another customer: ${tuner.customerConnected?.id} ${tuner.customerConnected?.name}")
+        customers[id]?.let {
+            if (it.secret != secret) throw SecurityException("Invalid secret for customer $id")
+            return AuthenticatedClient(id, ClientType.CUSTOMER)
         }
+        throw SecurityException("Client not found: $id")
+    }
 
-        val registerTimestamp = System.currentTimeMillis()
-        customer.session.sendJsonMessage(
+    // --- REST: operations (authorization enforced here) ---
+
+    fun getTunerById(id: String, client: AuthenticatedClient): Tuner {
+        if (client.type != ClientType.TUNER || client.id != id) throw SecurityException("Access denied")
+        return getTuner(id)
+    }
+
+    fun getCustomerById(id: String, client: AuthenticatedClient): Customer {
+        if (client.type != ClientType.CUSTOMER || client.id != id) throw SecurityException("Access denied")
+        return getCustomer(id)
+    }
+
+    fun listCustomers(client: AuthenticatedClient): List<Customer> {
+        if (client.type != ClientType.TUNER) throw SecurityException("Only tuners can list customers")
+        return customers.values.toList()
+    }
+
+    fun unregisterTuner(id: String, client: AuthenticatedClient) {
+        if (client.type != ClientType.TUNER || client.id != id) throw SecurityException("Access denied")
+        val tuner = tuners.remove(id) ?: return
+        tuner.wsSession?.let { tunersByWsSessionId.remove(it.id) }
+        tuner.customerConnected?.let { customer ->
+            customer.tunerConnected = null
+            customer.wsSession?.sendJsonMessage(PairDisconnectedMessage(System.currentTimeMillis()))
+        }
+        logger.info("Tuner unregistered: ${tuner.id}")
+    }
+
+    fun unregisterCustomer(id: String, client: AuthenticatedClient) {
+        if (client.type != ClientType.CUSTOMER || client.id != id) throw SecurityException("Access denied")
+        val customer = customers.remove(id) ?: return
+        customer.wsSession?.let { customersByWsSessionId.remove(it.id) }
+        customer.tunerConnected?.let { tuner ->
+            tuner.customerConnected = null
+            tuner.wsSession?.sendJsonMessage(PairDisconnectedMessage(System.currentTimeMillis()))
+        }
+        logger.info("Customer unregistered: ${customer.id}")
+    }
+
+    fun requestConnection(client: AuthenticatedClient, customerId: String): Long {
+        if (client.type != ClientType.TUNER) throw SecurityException("Only tuners can request connections")
+        val tuner = getTuner(client.id)
+        val customer = getCustomer(customerId)
+
+        check(tuner.customerConnected == null) {
+            "Tuner already paired with customer: ${tuner.customerConnected?.id}"
+        }
+        check(customer.tunerConnected == null) {
+            "Customer already paired with tuner: ${customer.tunerConnected?.id}"
+        }
+        val customerWs = customer.wsSession
+            ?: throw IllegalStateException("Customer ${customer.id} has no active WebSocket connection")
+
+        val requestId = System.currentTimeMillis()
+        customerWs.sendJsonMessage(
             RegisterTunerRequestMessage(
-                timestamp = registerTimestamp,
-                tuner = RegisterTunerRequestMessage.Tuner(
-                    id = tuner.id,
-                    name = tuner.name,
-                )
+                timestamp = requestId,
+                tuner = RegisterTunerRequestMessage.Tuner(id = tuner.id, name = tuner.name),
             )
         )
+        pendingRegisters[requestId] = PendingRegisterDto(requestId, tuner, customer)
 
-        // TODO: implements a structure to send message to websocket clients and await for answer.
-        pendingRegisters[registerTimestamp] = PendingRegisterDto(
-            request = message,
-            registerTimestamp = registerTimestamp,
-            tuner = tuner,
-        )
-
-        // wait 3s and answer the tuner if customer not answer.
-        val fn = Runnable {
-            pendingRegisters[registerTimestamp]?.let {
-                tuner.session.sendJsonMessage(
+        scheduler.schedule(Runnable {
+            if (pendingRegisters.remove(requestId) != null) {
+                tuner.wsSession?.sendJsonMessage(
                     RegisterToCustomerResponseMessage(
                         timestamp = System.currentTimeMillis(),
-                        responseTo = message.timestamp,
+                        responseTo = requestId,
                         success = false,
                     )
                 )
-                pendingRegisters.remove(registerTimestamp)
+                logger.info("Connection request $requestId timed out")
             }
-        }
-        this.scheduler.schedule(fn, Instant.now().plusSeconds(15)) // TODO FIX
+        }, Instant.now().plusSeconds(15))
 
+        logger.info("Connection request $requestId: tuner=${tuner.id} → customer=${customer.id}")
+        return requestId
     }
 
-    private fun onListCustomerRequest(tuner: Tuner, message: ListCustomersRequestMessage) {
-        val response = ListCustomersResponseMessage(
-            timestamp = System.currentTimeMillis(),
-            responseTo = message.timestamp,
-            customers = this.customers.values.map { ListCustomersResponseMessage.CustomerResponse.fromCustomer(it) }
-        )
-        tuner.session.sendJsonMessage(response)
+    fun respondToConnection(client: AuthenticatedClient, requestId: Long, accepted: Boolean) {
+        if (client.type != ClientType.CUSTOMER) throw SecurityException("Only customers can respond to connections")
+        val pending = pendingRegisters.remove(requestId)
+            ?: throw IllegalArgumentException("No pending connection request: $requestId")
+
+        require(pending.customer.id == client.id) {
+            "Connection request does not belong to this customer"
+        }
+
+        val tuner = pending.tuner
+        val customer = pending.customer
+        val now = System.currentTimeMillis()
+
+        if (accepted) {
+            tuner.customerConnected = customer
+            customer.tunerConnected = tuner
+            tuner.wsSession?.sendJsonMessage(PairConnectedMessage(now, PairConnectedMessage.Peer(customer.id, customer.name)))
+            customer.wsSession?.sendJsonMessage(PairConnectedMessage(now, PairConnectedMessage.Peer(tuner.id, tuner.name)))
+        } else {
+            tuner.wsSession?.sendJsonMessage(RegisterToCustomerResponseMessage(now, requestId, success = false))
+        }
+
+        logger.info("Connection request $requestId: accepted=$accepted tuner=${tuner.id} customer=${customer.id}")
+    }
+
+    // --- WebSocket: message handling ---
+
+    fun onTunerMessage(session: WebSocketSession, message: BaseMessage) {
+        try {
+            val tuner = tunersByWsSessionId[session.id]
+                ?: throw IllegalStateException("WS session not linked to any tuner: ${session.id}")
+            when (message) {
+                is EchoSerialDataMessage -> {
+                    val ws = tuner.customerConnected?.wsSession
+                        ?: throw IllegalStateException("Tuner has no paired customer with an active WebSocket")
+                    ws.sendJsonMessage(message)
+                }
+                else -> throw IllegalArgumentException("Unsupported message type: ${message.type}")
+            }
+        } catch (e: Exception) {
+            logger.warn("Failure during tuner WS message. Session: ${session.id} Error: ${e.message}")
+            session.sendJsonError(message.timestamp, e.message)
+        }
     }
 
     fun onCustomerMessage(session: WebSocketSession, message: BaseMessage) {
         try {
-            val customer = getCustomer(session.id)
+            val customer = customersByWsSessionId[session.id]
+                ?: throw IllegalStateException("WS session not linked to any customer: ${session.id}")
             when (message) {
-                is RegisterTunerResponseMessage -> onRegisterTunerResponse(customer, message)
-                is GetStateRequestMessage -> onGetStateRequest(customer, message)
-                is EchoSerialDataMessage -> onEchoSerialDataMessage(customer, message)
-                else -> throw IllegalArgumentException("Unsupported message type ${message.type}")
+                is EchoSerialDataMessage -> {
+                    val ws = customer.tunerConnected?.wsSession
+                        ?: throw IllegalStateException("Customer has no paired tuner with an active WebSocket")
+                    ws.sendJsonMessage(message)
+                }
+                else -> throw IllegalArgumentException("Unsupported message type: ${message.type}")
             }
-
         } catch (e: Exception) {
-            this.logger.warn("Failure during customer message. Session: ${session.id} Timestamp: ${message.timestamp} Type: ${e.message}")
+            logger.warn("Failure during customer WS message. Session: ${session.id} Error: ${e.message}")
             session.sendJsonError(message.timestamp, e.message)
         }
     }
 
-    private fun onGetStateRequest(tuner: Tuner, message: GetStateRequestMessage) {
-        tuner.session.sendJsonMessage(
-            GetStateResponseMessage(
-                timestamp = System.currentTimeMillis(),
-                responseTo = message.timestamp,
-                data = GetStateResponseMessage.Data(
-                    id = tuner.id,
-                    name = tuner.name,
-                    connected = tuner.customerConnected != null,
-                )
-            )
-        )
+    // --- internal helpers ---
+
+    private fun validateTuner(id: String, secret: String): Tuner {
+        val tuner = tuners[id] ?: throw IllegalArgumentException("Tuner not found: $id")
+        if (tuner.secret != secret) throw SecurityException("Invalid secret for tuner $id")
+        return tuner
     }
 
-    private fun onGetStateRequest(customer: Customer, message: GetStateRequestMessage) {
-        customer.session.sendJsonMessage(
-            GetStateResponseMessage(
-                timestamp = System.currentTimeMillis(),
-                responseTo = message.timestamp,
-                data = GetStateResponseMessage.Data(
-                    id = customer.id,
-                    name = customer.name,
-                    connected = customer.tunerConnected != null,
-                )
-            )
-        )
+    private fun validateCustomer(id: String, secret: String): Customer {
+        val customer = customers[id] ?: throw IllegalArgumentException("Customer not found: $id")
+        if (customer.secret != secret) throw SecurityException("Invalid secret for customer $id")
+        return customer
     }
 
-    private fun onRegisterTunerResponse(customer: Customer, message: RegisterTunerResponseMessage) {
+    private fun getTuner(id: String): Tuner =
+        tuners[id] ?: throw IllegalArgumentException("Tuner not found: $id")
 
-        val pendingRegister = pendingRegisters[message.responseTo]
-            ?: throw IllegalArgumentException("No register found: ${customer.id} ${customer.name} - ${message.responseTo}")
-
-        val tuner = pendingRegister.tuner
-
-        if (customer.tunerConnected != null) {
-            throw IllegalStateException("Tuner already connected: ${customer.tunerConnected?.id} ${customer.tunerConnected?.name}")
-        }
-        if (tuner.customerConnected != null) {
-            throw IllegalStateException("Tuner already connected to another customer: ${tuner.customerConnected?.id} ${tuner.customerConnected?.name}")
-        }
-
-        pendingRegisters.remove(message.responseTo)
-
-        if (message.success) {
-            tuner.customerConnected = customer
-            customer.tunerConnected = tuner
-        }
-
-        tuner.session.sendJsonMessage(
-            RegisterToCustomerResponseMessage(
-                timestamp = System.currentTimeMillis(),
-                responseTo = pendingRegister.request.timestamp,
-                success = message.success,
-            )
-        )
-        customer.session.sendJsonMessage(
-            RegisterToCustomerResponseMessage(
-                timestamp = System.currentTimeMillis(),
-                responseTo = message.timestamp,
-                success = message.success,
-            )
-        )
-
-        this.logger.info("Tuner ${tuner.id} ${tuner.name} registered to Customer ${customer.id} ${customer.name}")
-    }
+    private fun getCustomer(id: String): Customer =
+        customers[id] ?: throw IllegalArgumentException("Customer not found: $id")
 
     private data class PendingRegisterDto(
-        val registerTimestamp: Long,
-        val request: RegisterToCustomerRequestMessage,
+        val requestId: Long,
         val tuner: Tuner,
+        val customer: Customer,
     )
 }

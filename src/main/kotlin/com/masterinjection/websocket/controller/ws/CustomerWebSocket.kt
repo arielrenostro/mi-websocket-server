@@ -17,25 +17,38 @@ class CustomerWebSocket(
     private val mapper: ObjectMapper,
 ) : TextWebSocketHandler() {
 
-    private val logger = LoggerFactory.getLogger(TunerWebSocket::class.java)
+    private val logger = LoggerFactory.getLogger(CustomerWebSocket::class.java)
 
     override fun handleTextMessage(session: WebSocketSession, message: TextMessage) {
         try {
-            val message = this.mapper.readValue(message.payload, BaseMessage::class.java)
-            this.tuningSessionService.onCustomerMessage(session, message)
+            val msg = mapper.readValue(message.payload, BaseMessage::class.java)
+            tuningSessionService.onCustomerMessage(session, msg)
         } catch (e: Exception) {
-            this.logger.warn("Failure on Customer WebSocket. Session: ${session.id} Message: ${message.payload} Error: ${e.message}")
+            logger.warn("Failure on Customer WebSocket. Session: ${session.id} Error: ${e.message}")
             session.sendJsonError(null, e.message)
         }
     }
 
     override fun afterConnectionEstablished(session: WebSocketSession) {
-        this.logger.info("New Customer Connected: ${session.id} - ${session.attributes["name"]}")
-        this.tuningSessionService.registerCustomer(session, session.attributes["name"] as String?)
+        val id = session.attributes["clientId"] as String?
+        val secret = session.attributes["clientSecret"] as String?
+        val name = session.attributes["clientName"] as String?
+        try {
+            when {
+                id != null && secret != null -> tuningSessionService.reconnectCustomerWs(session, id, secret)
+                name != null -> tuningSessionService.newCustomerConnection(session, name)
+                else -> {
+                    logger.warn("Customer WS rejected: missing X-Client-Name or X-Client-Id/X-Client-Secret headers")
+                    session.close(CloseStatus.NOT_ACCEPTABLE)
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn("Customer WS connection rejected: ${e.message}")
+            session.close(CloseStatus.NOT_ACCEPTABLE)
+        }
     }
 
     override fun afterConnectionClosed(session: WebSocketSession, status: CloseStatus) {
-        this.logger.info("Customer Disconnected: ${session.id} - ${session.attributes["name"]} - $status")
-        this.tuningSessionService.unregisterCustomer(session, status)
+        tuningSessionService.disconnectCustomerWs(session)
     }
 }

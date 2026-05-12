@@ -2,25 +2,16 @@ package com.masterinjection.websocket.domain.message
 
 enum class MessageType {
 
-    // Generic
+    // Generic (bidirectional or server → client push)
     REGISTERED,
     ERROR,
-    GET_STATE,
-    STATE,
     ECHO_SERIAL_DATA,
+    PAIR_CONNECTED,
     PAIR_DISCONNECTED,
 
-    // Tuner to Server Messages
-    LIST_CUSTOMERS,
-    REGISTER_TO_CUSTOMER,
-
-    // Server to Tuner Messages
-    LIST_CUSTOMERS_RESPONSE,
+    // Server → Tuner push
     REGISTER_TO_CUSTOMER_RESPONSE,
 
-    // Customer to Server Messages
-    REGISTER_TUNER_RESPONSE,
-
-    // Server to Customer Messages
-    REGISTER_TUNER
+    // Server → Customer push
+    REGISTER_TUNER,
 }

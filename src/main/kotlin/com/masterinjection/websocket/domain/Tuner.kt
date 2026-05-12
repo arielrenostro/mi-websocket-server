@@ -2,9 +2,10 @@ package com.masterinjection.websocket.domain
 
 import org.springframework.web.socket.WebSocketSession
 
-data class Tuner(
+class Tuner(
     val id: String,
     val name: String,
-    val session: WebSocketSession,
+    val secret: String,
+    var wsSession: WebSocketSession? = null,
     var customerConnected: Customer? = null,
 )
