@@ -1,23 +1,23 @@
-# mi-websocket-server
+# mi-remote-tuning-server
 
-Servidor de intermediação para calibração remota de veículos. Conecta em tempo real dois tipos de clientes — **Tuner** (ferramenta de calibração) e **Customer** (veículo/ECU) — e retransmite dados seriais entre eles após o pareamento.
+Brokering server for remote vehicle calibration. Connects two types of clients in real time — **Tuner** (calibration tool) and **Customer** (vehicle/ECU) — and relays serial data between them after pairing.
 
 ## Stack
 
 - Kotlin + Spring Boot 4
-- Spring WebSocket (STOMP-free, handler raw)
+- Spring WebSocket (STOMP-free, raw handler)
 - Spring MVC (REST)
 - Java 21
 
-## Arquitetura
+## Architecture
 
-O servidor adota um modelo híbrido:
+The server uses a hybrid model:
 
-- **WebSocket** gerencia presença e troca de dados — conexão aberta = cliente online, conexão fechada = cliente offline.
-- **REST** gerencia operações discretas — listar, parear, consultar estado.
+- **WebSocket** manages presence and data exchange — open connection = client online, closed connection = client offline.
+- **REST** manages discrete operations — listing, pairing, querying state.
 
 ```
-Tuner                        Servidor                      Customer
+Tuner                        Server                        Customer
   |                              |                              |
   |-- WS connect (X-Client-Name) |                              |
   |<-- REGISTERED {id, secret} --|                              |
@@ -36,11 +36,11 @@ Tuner                        Servidor                      Customer
   |<====== ECHO_SERIAL_DATA ===============================>   |
 ```
 
-## Executando
+## Running
 
 ### Local
 
-Requer Java 21.
+Requires Java 21.
 
 ```bash
 ./gradlew bootRun
@@ -49,79 +49,79 @@ Requer Java 21.
 ### Docker
 
 ```bash
-docker build -t mi-websocket-server .
-docker run -p 8080:8080 mi-websocket-server
+docker build -t mi-remote-tuning-server .
+docker run -p 8080:8080 mi-remote-tuning-server
 ```
 
-O servidor sobe na porta `8080` por padrão. Para alterar, edite `application.properties`:
+The server listens on port `8080` by default. To change it, edit `application.properties`:
 
 ```properties
 server.port=9090
 server.address=0.0.0.0
 ```
 
-## Conexão WebSocket
+## WebSocket Connection
 
-Dois endpoints disponíveis:
+Two endpoints available:
 
 | Endpoint | Actor |
 |---|---|
 | `ws://host:8080/ws/tuner` | Tuner |
 | `ws://host:8080/ws/customer` | Customer |
 
-### Primeiro acesso — novo registro
+### First connection — new registration
 
 ```
-X-Client-Name: <nome do cliente>
+X-Client-Name: <client name>
 ```
 
-O servidor responde com um push `REGISTERED` contendo `id` e `secret`:
+The server responds with a `REGISTERED` push containing `id` and `secret`:
 
 ```json
 {
   "type": "REGISTERED",
   "timestamp": 1715000000000,
   "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
-  "name": "MeuTuner",
+  "name": "MyTuner",
   "secret": "a3f1c29e8b4d6e0f7a2c5d8e1b4f9c3a"
 }
 ```
 
-Guarde `id` e `secret` — são as credenciais para reconexão e chamadas REST.
+Save `id` and `secret` — they are the credentials for reconnection and REST calls.
 
-### Reconexão — retoma sessão existente
-
-```
-X-Client-Id:     <id>
-X-Client-Secret: <secret>
-```
-
-O servidor confirma com `REGISTERED` e, se o cliente estiver pareado, envia `PAIR_CONNECTED` em seguida para ressincronizar o estado.
-
-## Autenticação REST
-
-Todas as chamadas REST exigem os headers:
+### Reconnection — resume existing session
 
 ```
 X-Client-Id:     <id>
 X-Client-Secret: <secret>
 ```
 
-Credenciais inválidas ou ausentes retornam `401 Unauthorized`.
+The server confirms with `REGISTERED` and, if the client was paired, follows up with `PAIR_CONNECTED` to resync state.
+
+## REST Authentication
+
+All REST calls require the headers:
+
+```
+X-Client-Id:     <id>
+X-Client-Secret: <secret>
+```
+
+Invalid or missing credentials return `401 Unauthorized`.
 
 ## API
 
-Documentação completa dos endpoints REST e mensagens WebSocket com exemplos JSON em [`API.md`](./API.md).
+Full documentation of REST endpoints and WebSocket messages with JSON examples in [`API.md`](./API.md).
 
-## Desenvolvimento
+## Development
 
 ```bash
-# Compilar
+# Build
 ./gradlew build
 
-# Testes
+# Tests
 ./gradlew test
 
-# Teste único
-./gradlew test --tests "com.masterinjection.websocket.<NomeDaClasse>"
+# Single test
+./gradlew test --tests "com.masterinjection.remotetuningserver.<ClassName>"
 ```

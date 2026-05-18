@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-WebSocket server for **Master Injection Remote Calibration** — a Spring Boot 4 / Kotlin application that brokers real-time communication between two types of clients: **Tuners** (calibration tools) and **Customers** (vehicles/ECUs being tuned). The server pairs them and relays serial data between them.
+Remote Tuning Server for **Master Injection** — a Spring Boot 4 / Kotlin application that brokers real-time communication between two types of clients: **Tuners** (calibration tools) and **Customers** (vehicles/ECUs being tuned). The server pairs them and relays serial data between them.
 
 ## Commands
 
@@ -19,10 +19,10 @@ WebSocket server for **Master Injection Remote Calibration** — a Spring Boot 4
 ./gradlew test
 
 # Run a single test class
-./gradlew test --tests "com.masterinjection.websocket.application.WebsocketServerApplicationTests"
+./gradlew test --tests "com.masterinjection.remotetuningserver.application.RemoteTuningServerApplicationTests"
 
 # Build Docker image
-docker build -t mi-websocket-server .
+docker build -t mi-remote-tuning-server .
 ```
 
 **Requirements:** Java 21 toolchain (Gradle wrapper handles it).

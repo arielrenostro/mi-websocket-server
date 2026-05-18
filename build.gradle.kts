@@ -7,7 +7,7 @@ plugins {
 
 group = "com.masterinjection"
 version = "0.0.1-SNAPSHOT"
-description = "WebSocket Server for Master Injection Remote Calibration"
+description = "Remote Tuning Server for Master Injection"
 
 java {
 	toolchain {

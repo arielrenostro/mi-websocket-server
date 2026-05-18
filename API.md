@@ -1,4 +1,4 @@
-# API Reference — mi-websocket-server
+# API Reference — mi-remote-tuning-server
 
 Servidor de intermediação WebSocket para calibração remota. Clientes são **Tuners** (ferramenta de calibração) e **Customers** (veículo/ECU).
 
